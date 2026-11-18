@@ -40,6 +40,7 @@
     mode: 'select',
     highlight: null, // { attr, v }
     showCounts: !!saved.prefs.counts,
+    showHelper: !!saved.prefs.helper, // 색깔·문양 범례(강조/장수 표시). 기본은 숨김
   };
 
   const finished = () => state.solved || state.gaveUp;
@@ -286,6 +287,12 @@
 
   // ---------------------------------------------------------------- 범례
   function renderLegend() {
+    const toggle = $('#helper-toggle');
+    toggle.textContent = state.showHelper ? '색깔·문양 도우미 숨기기' : '색깔·문양 도우미 보기';
+    toggle.setAttribute('aria-expanded', String(state.showHelper));
+    $('#legend').hidden = !state.showHelper;
+    if (!state.showHelper) return;
+
     const board = state.puzzle.board;
     const row = (attr) => {
       const info = DC.ATTRS[attr];
@@ -560,6 +567,15 @@
       saved.prefs.counts = state.showCounts;
       writeStore();
       renderLegend();
+    });
+
+    $('#helper-toggle').addEventListener('click', () => {
+      state.showHelper = !state.showHelper;
+      if (!state.showHelper) state.highlight = null; // 숨기면 강조도 해제
+      saved.prefs.helper = state.showHelper;
+      writeStore();
+      renderLegend();
+      renderCards();
     });
 
     $('#mode-select').addEventListener('click', () => { state.mode = 'select'; renderAll(); });
