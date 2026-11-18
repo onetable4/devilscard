@@ -5,9 +5,11 @@
  *  - 조건 개수 4~7, 유형 제한/다양성 규칙
  *  - 같은 번호 → 같은 퍼즐 (결정성)
  *  - 색깔/문양 장수에 동점이 없는지
+ *  - 풀이기가 정답을 지우지 않는지(풀었다면 정답과 일치) + 난이도 분포
  */
 'use strict';
 const DC = require('../js/engine.js');
+const S = require('../js/solver.js');
 
 const COUNT = Number(process.argv[2]) || 500;
 let failures = 0;
@@ -15,6 +17,8 @@ const fail = (n, msg) => { failures++; console.error(`✗ #${n}: ${msg}`); };
 
 const clueCountDist = {};
 const typeDist = {};
+const tierDist = {};
+let solverMs = 0;
 let totalMs = 0, maxMs = 0;
 
 for (let n = 1; n <= COUNT; n++) {
@@ -27,6 +31,13 @@ for (let n = 1; n <= COUNT; n++) {
   if (sols.length !== 1) fail(n, `해 개수 ${sols.length}`);
   else if (!DC.isAnswer(p, sols[0])) fail(n, '유일 해가 정답과 다름');
   if (DC.violations(p, p.answer).length) fail(n, '정답이 조건을 위반');
+
+  const s0 = process.hrtime.bigint();
+  const r = S.solve(p);
+  solverMs += Number(process.hrtime.bigint() - s0) / 1e6;
+  if (r.solved && !DC.isAnswer(p, r.answer)) fail(n, '풀이기 결과가 정답과 다름');
+  if (!p.answer.every((v, i) => r.final[i] & (1 << v))) fail(n, '풀이기가 정답 후보를 지움');
+  tierDist[r.rating.label] = (tierDist[r.rating.label] || 0) + 1;
 
   p.clues.forEach((_, i) => {
     const rest = p.clues.filter((__, j) => j !== i);
@@ -67,6 +78,7 @@ console.log(`퍼즐 ${COUNT}개 검증 — 실패 ${failures}건`);
 console.log(`생성 시간: 평균 ${(totalMs / COUNT).toFixed(1)}ms, 최대 ${maxMs.toFixed(1)}ms`);
 console.log('조건 개수 분포:', clueCountDist);
 console.log('유형별 등장 수:', typeDist);
+console.log(`난이도 분포 (풀이기 평균 ${(solverMs / COUNT).toFixed(1)}ms):`, tierDist);
 
 const sample = DC.generatePuzzle(322);
 console.log(`\n예시 #322 (정답 ${sample.answer.map((v) => DC.LETTERS[v - 1]).join('')})`);

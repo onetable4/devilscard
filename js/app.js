@@ -41,6 +41,7 @@
     highlight: null, // { attr, v }
     showCounts: !!saved.prefs.counts,
     showHelper: !!saved.prefs.helper, // 색깔·문양 범례(강조/장수 표시). 기본은 숨김
+    randomTier: saved.prefs.randomTier || 'mix', // 랜덤 버튼이 뽑을 난이도
   };
 
   const finished = () => state.solved || state.gaveUp;
@@ -109,6 +110,72 @@
   }
 
   // ---------------------------------------------------------------- 퍼즐 불러오기
+  // 풀이기로 난이도 측정 (풀이기를 못 불러와도 게임은 그대로 진행). 번호별로 기억
+  const ratingCache = new Map();
+  function rateOf(puzzle) {
+    if (ratingCache.has(puzzle.n)) return ratingCache.get(puzzle.n);
+    let rating = null;
+    try { rating = window.DCSolver ? window.DCSolver.solve(puzzle).rating : null; } catch (e) { rating = null; }
+    if (ratingCache.size > 500) ratingCache.clear();
+    ratingCache.set(puzzle.n, rating);
+    return rating;
+  }
+
+  // ---------------------------------------------------------------- 난이도별 랜덤
+  // tier: 0 쉬움, 1 보통, 2 어려움, 3 매우 어려움
+  const RANDOM_TIERS = {
+    mix: (t) => t <= 2, // 기본: 쉬움~어려움
+    easy: (t) => t === 0,
+    normal: (t) => t === 1,
+    hard: (t) => t === 2,
+    extreme: (t) => t === 3,
+  };
+  const RANDOM_MAX_TRIES = 600; // 매우 어려움(약 3.5%)도 실패 확률이 사실상 0인 횟수
+  let drawing = false;
+
+  function drawRandom() {
+    if (drawing) return;
+    // 화면에 보이는 드롭다운 값이 기준. (브라우저가 이전 선택을 change 이벤트 없이
+    // 복원하는 경우가 있어서, 따로 들고 있던 값이 화면과 어긋날 수 있다)
+    const sel = $('#random-tier');
+    const key = RANDOM_TIERS[sel.value] ? sel.value : 'mix';
+    if (key !== state.randomTier) {
+      state.randomTier = key;
+      saved.prefs.randomTier = key;
+      writeStore();
+    }
+    const ok = RANDOM_TIERS[key];
+    const randomNo = () => 1 + Math.floor(Math.random() * MAX_PUZZLE);
+    if (!window.DCSolver) { loadPuzzle(randomNo()); return; }
+
+    const btn = $('#random');
+    drawing = true;
+    btn.disabled = true;
+    btn.textContent = '찾는 중…';
+    let tries = 0;
+    const finish = (n) => {
+      drawing = false;
+      btn.disabled = false;
+      btn.textContent = '랜덤';
+      if (n) loadPuzzle(n);
+      else toast('맞는 난이도의 퍼즐을 찾지 못했어요. 다시 눌러 주세요');
+    };
+    // 한 번에 30ms씩만 찾고 화면에 양보 → 오래 걸려도 화면이 멈추지 않는다
+    const chunk = () => {
+      const t0 = performance.now();
+      while (performance.now() - t0 < 30) {
+        if (tries++ >= RANDOM_MAX_TRIES) { finish(null); return; }
+        const n = randomNo();
+        if (n === state.n) continue;
+        let rating = null;
+        try { rating = rateOf(DC.generatePuzzle(n)); } catch (e) { continue; }
+        if (rating && ok(rating.tier)) { finish(n); return; } // 난이도를 못 잰 퍼즐은 건너뜀
+      }
+      setTimeout(chunk, 0);
+    };
+    setTimeout(chunk, 0);
+  }
+
   function loadPuzzle(raw) {
     const n = parsePuzzleNo(raw);
     if (!n) {
@@ -132,6 +199,7 @@
     const prog = saved.p[n] || {};
     state.n = n;
     state.puzzle = puzzle;
+    state.rating = rateOf(puzzle);
     state.guesses = (prog.h || []).map((combo) => ({ combo, bad: DC.violations(puzzle, combo) }));
     state.marked = new Set(prog.m || []);
     state.struck = new Set(prog.s || []);
@@ -354,6 +422,10 @@
     $('#today').classList.toggle('active', state.n === todayNumber());
     $('#prev').disabled = state.n <= 1;
     $('#next').disabled = state.n >= MAX_PUZZLE;
+    const diff = $('#difficulty');
+    diff.hidden = !state.rating;
+    diff.textContent = state.rating ? state.rating.label : '';
+    diff.dataset.tier = state.rating ? state.rating.id : '';
     const status = $('#status');
     status.className = 'status';
     if (state.solved) { status.textContent = `해결 · ${state.guesses.length}번 시도`; status.classList.add('win'); }
@@ -383,7 +455,8 @@
     $('.board-tools .seg').classList.toggle('disabled', g);
     if (g) {
       const resumed = state.elapsed >= 1000 || state.guesses.length > 0;
-      $('#start-title').textContent = `#${state.n} · 조건 ${state.puzzle.clues.length}개`;
+      $('#start-title').textContent = `#${state.n} · 조건 ${state.puzzle.clues.length}개` +
+        (state.rating ? ` · 난이도 ${state.rating.label}` : '');
       $('#start').textContent = resumed ? '계속하기' : '시작하기';
       $('#start-hint').textContent = resumed
         ? `${fmtTime(state.elapsed)}에서 이어서 시간이 흘러요`
@@ -462,7 +535,7 @@
 
   function shareText() {
     const P = state.puzzle;
-    const lines = [`Devil's Card #${state.n}`];
+    const lines = [`Devil's Card #${state.n}` + (state.rating ? ` (${state.rating.label})` : '')];
     lines.push(state.solved
       ? `✅ ${state.guesses.length}번 만에 성공 · ${fmtTime(state.elapsed)}`
       : `🏳️ 포기 · ${fmtTime(state.elapsed)}`);
@@ -589,7 +662,15 @@
     $('#prev').addEventListener('click', () => loadPuzzle(state.n - 1));
     $('#next').addEventListener('click', () => loadPuzzle(state.n + 1));
     $('#today').addEventListener('click', () => loadPuzzle(todayNumber()));
-    $('#random').addEventListener('click', () => loadPuzzle(1 + Math.floor(Math.random() * 99999)));
+    $('#random').addEventListener('click', drawRandom);
+    const tierSelect = $('#random-tier');
+    if (!RANDOM_TIERS[state.randomTier]) state.randomTier = 'mix';
+    tierSelect.value = state.randomTier;
+    tierSelect.addEventListener('change', () => {
+      state.randomTier = RANDOM_TIERS[tierSelect.value] ? tierSelect.value : 'mix';
+      saved.prefs.randomTier = state.randomTier;
+      writeStore();
+    });
     const numInput = $('#puzzle-num');
     // 숫자만, 최대 5자리
     numInput.addEventListener('input', () => {
@@ -619,7 +700,7 @@
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (document.querySelector('dialog[open]')) return;
       const t = e.target;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
 
       // 시작 전/일시정지: Enter·Space로 시작, 그 외 키는 무시
       if (gated()) {
